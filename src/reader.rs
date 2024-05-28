@@ -2,13 +2,13 @@
 use std::io::Cursor;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Endianess {
+pub(crate) enum Endian {
     Little,
     Big,
 }
 
-#[derive(Debug)]
-pub(crate) enum Number {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NumberType {
     F32,
     F64,
 }
