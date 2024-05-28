@@ -131,7 +131,7 @@ impl<'a> Decoder<'a> {
         if bytemark == ID_CHUNK {
             Ok(())
         } else {
-            Error::new_decoder("chunk bytemark must be 'End'(27), found: {bytemark}").into()
+            Error::new_decoder("chunk bytemark must be 'Esc'(27), found: {bytemark}").into()
         }
     }
 
