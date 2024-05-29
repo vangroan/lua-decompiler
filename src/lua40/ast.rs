@@ -53,8 +53,11 @@ pub struct LocalVar {
 
 #[derive(Debug)]
 pub enum Expr {
+    /// Variable access by name.
+    Access(Ident),
     Literal(Lit),
     Binary(Box<BinExpr>),
+    Call(Box<Call>),
 }
 
 /// Literal value.
@@ -77,6 +80,12 @@ pub enum BinOp {
     Add,
 }
 
+#[derive(Debug)]
+pub struct Call {
+    pub name: Expr,
+    pub args: Vec<Expr>,
+}
+
 // ============================================================================
 // Functions
 // ============================================================================
@@ -87,6 +96,13 @@ impl Node {
     pub fn is_local_var(&self) -> bool {
         matches!(self, Node::Stmt(Stmt::LocalVar(_)))
     }
+
+    pub fn into_expr(self) -> Option<Expr> {
+        match self {
+            Node::Stmt(_) => None,
+            Node::Expr(expr) => Some(expr),
+        }
+    }
 }
 
 impl Ident {
@@ -94,6 +110,10 @@ impl Ident {
         Self {
             text: text.to_string(),
         }
+    }
+
+    pub fn as_str(&self) -> &str {
+        self.text.as_str()
     }
 }
 
@@ -103,8 +123,26 @@ impl fmt::Display for Ident {
     }
 }
 
+impl From<Ident> for Node {
+    fn from(ident: Ident) -> Self {
+        Node::Expr(Expr::Access(ident))
+    }
+}
+
 impl From<Lit> for Node {
     fn from(lit: Lit) -> Self {
         Node::Expr(Expr::Literal(lit))
+    }
+}
+
+impl From<BinExpr> for Node {
+    fn from(bin_expr: BinExpr) -> Self {
+        Node::Expr(Expr::Binary(Box::new(bin_expr)))
+    }
+}
+
+impl From<Call> for Node {
+    fn from(call: Call) -> Self {
+        Node::Expr(Expr::Call(Box::new(call)))
     }
 }

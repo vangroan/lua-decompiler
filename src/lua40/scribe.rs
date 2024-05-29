@@ -1,7 +1,7 @@
 //! Code generator for Lua syntax.
 use std::fmt::Write as FmtWrite;
 
-use super::ast::{Block, Expr, Lit, LocalVar, Node, Stmt, Syntax};
+use super::ast::{BinExpr, BinOp, Block, Call, Expr, Ident, Lit, LocalVar, Node, Stmt, Syntax};
 use crate::errors::Result;
 
 pub struct Scribe {
@@ -28,7 +28,8 @@ impl Scribe {
     fn fmt_node(&mut self, f: &mut impl FmtWrite, node: &Node) -> Result<()> {
         match node {
             Node::Stmt(stmt) => self.fmt_stmt(f, stmt),
-            Node::Expr(_) => todo!(),
+            // FIXME: Some expressions are valid statements, like Call. Can we detect this and wrap them in stmt?
+            Node::Expr(expr) => self.fmt_expr(f, expr),
         }
     }
 
@@ -48,9 +49,15 @@ impl Scribe {
 
     fn fmt_expr(&mut self, f: &mut impl FmtWrite, expr: &Expr) -> Result<()> {
         match expr {
-            Expr::Literal(lit) => self.fmt_lit(f, lit)?,
-            Expr::Binary(_) => todo!(),
+            Expr::Access(ident) => self.fmt_access(f, ident),
+            Expr::Literal(lit) => self.fmt_lit(f, lit),
+            Expr::Binary(bin_expr) => self.fmt_binary_expr(f, bin_expr),
+            Expr::Call(call) => self.fmt_call(f, &*call),
         }
+    }
+
+    fn fmt_access(&mut self, f: &mut impl FmtWrite, ident: &Ident) -> Result<()> {
+        write!(f, "{}", ident)?;
         Ok(())
     }
 
@@ -60,6 +67,33 @@ impl Scribe {
             Lit::Num(_) => todo!(),
             Lit::Str(_) => todo!(),
         }
+        Ok(())
+    }
+
+    fn fmt_binary_expr(&mut self, f: &mut impl FmtWrite, bin_expr: &BinExpr) -> Result<()> {
+        self.fmt_expr(f, &bin_expr.lhs)?;
+        write!(f, " ")?;
+
+        match bin_expr.op {
+            BinOp::Add => write!(f, "+")?,
+        }
+
+        write!(f, " ")?;
+        self.fmt_expr(f, &bin_expr.rhs)?;
+
+        Ok(())
+    }
+
+    fn fmt_call(&mut self, f: &mut impl FmtWrite, call: &Call) -> Result<()> {
+        self.fmt_expr(f, &call.name)?;
+        write!(f, "(")?;
+        for (i, arg) in call.args.iter().enumerate() {
+            if i != 0 {
+                write!(f, ", ")?;
+            }
+            self.fmt_expr(f, arg)?;
+        }
+        write!(f, ")")?;
         Ok(())
     }
 }
