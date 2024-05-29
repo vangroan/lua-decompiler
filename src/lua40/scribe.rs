@@ -36,6 +36,7 @@ impl Scribe {
     fn fmt_stmt(&mut self, f: &mut impl FmtWrite, stmt: &Stmt) -> Result<()> {
         match stmt {
             Stmt::LocalVar(local_var) => self.fmt_local_var(f, local_var),
+            Stmt::Call(call) => self.fmt_call(f, call),
         }
     }
 

@@ -34,6 +34,7 @@ pub struct Ident {
 #[derive(Debug)]
 pub enum Stmt {
     LocalVar(LocalVar),
+    Call(Box<Call>),
 }
 
 /// Local variable declaration.

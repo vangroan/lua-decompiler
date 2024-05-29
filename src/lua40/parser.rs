@@ -3,7 +3,7 @@
 //! Analyzes bytecode instructions to generate an abstract syntax tree.
 use std::fmt::{self, Formatter};
 
-use super::ast::{BinExpr, BinOp, Call, Ident, Lit, LocalVar, Node, Stmt};
+use super::ast::{BinExpr, BinOp, Call, Expr, Ident, Lit, LocalVar, Node, Stmt};
 use super::{Op, Proto};
 use crate::errors::{Error, Result};
 use crate::lua40::ast::{Block, Syntax};
@@ -151,7 +151,15 @@ impl<'a> Parser<'a> {
             );
         }
 
-        self.nodes[ip.as_usize()] = Some(Call { name, args }.into());
+        let node: Node = if results == 0 {
+            // When the call returns 0 results, it implies the function
+            // was called as a statement.
+            Node::Stmt(Stmt::Call(Box::new(Call { name, args })))
+        } else {
+            // When the call returns results, it was part of an expression.
+            Node::Expr(Expr::Call(Box::new(Call { name, args })))
+        };
+        self.nodes[ip.as_usize()] = Some(node);
 
         Ok(())
     }
@@ -259,6 +267,7 @@ impl<'a> Parser<'a> {
         {
             Node::Stmt(stmt) => match stmt {
                 Stmt::LocalVar(local_var) => Ok(local_var.name.as_str()),
+                _ => Error::new_parser("unexpected statement in local variable node").into(),
             },
             Node::Expr(_) => {
                 Error::new_parser("unexpected expression in local variable node").into()
