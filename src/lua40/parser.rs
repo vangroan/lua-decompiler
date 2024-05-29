@@ -120,7 +120,7 @@ impl<'a> Parser<'a> {
         // then promote it.
         //
         // Local variable declarations at the start of the function
-        // may have their SET_LOCAL instructions removed as an
+        // may have their OP_SETLOCAL instructions removed as an
         // optimsation.
         if let Some(node) = &self.nodes[ip.as_usize()] {
             if !node.is_local_var() {
