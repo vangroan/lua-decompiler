@@ -123,6 +123,7 @@ impl<'a> Parser<'a> {
         // may have their OP_SETLOCAL instructions removed as an
         // optimsation.
         if let Some(node) = &self.nodes[ip.as_usize()] {
+            // TODO: Consider the case where an expression assigned after declaration.
             if !node.is_local_var() {
                 let node = self.nodes[ip.as_usize()].take().unwrap();
 
