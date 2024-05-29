@@ -1,3 +1,15 @@
+//! Lua 4.0 Decompiler.
+//!
+//! # Opcodes
+//!
+//! ```text
+//!       26     6
+//!  __________ ____
+//! |    U     | Op |
+//! |    S   |s| Op |
+//! |  A  | B  | Op |
+//! ```
+
 #![allow(dead_code)]
 use byteorder::ReadBytesExt;
 use std::ffi::CString;
@@ -48,7 +60,7 @@ pub enum Opcode {
     SetList,
     SetMap,
 
-    Add,
+    Add = 23,
     AddI,
     Sub,
     Mult,
@@ -82,10 +94,46 @@ pub enum Opcode {
     Closure = 48,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum Op {
     End,
-    Return { u: u8 },
+    /// Return from the current activation frame.
+    ///
+    /// Argument `U` is the numbeber of result values left on the stack.
+    Return {
+        results: u32,
+    },
+
+    /// Call Lua or C function.
+    ///
+    /// Argument `A` is the stack offset relative to the callee's stack base.
+    ///
+    /// Argument `B` is the number of result values left on the stack. When it's 255 (unsigned)
+    /// in bytecode it means the function has multiple returns.
+    Call {
+        stack_offset: u32,
+        results: u32,
+    },
+
+    /// Push an integer constant onto the stack.
+    ///
+    /// Argument `S` is the inlined signed integer value.
+    PushInt {
+        value: i32,
+    },
+
+    /// Copy the local variable from stack index `U` to the top of the stack.
+    GetLocal {
+        stack_offset: u32,
+    },
+    /// Copy a global variable to the top of the stack.
+    ///
+    /// Argument `U` is the index of the string constant that acts as the key.
+    GetGlobal {
+        string_id: u32,
+    },
+
+    Add,
 }
 
 #[derive(Debug)]
@@ -105,6 +153,7 @@ struct Header {
 #[derive(Debug)]
 struct Proto {
     code: Box<[u32]>,
+    ops: Box<[Op]>,
     source: String,
     line_defined: u32,
     num_params: u32,
@@ -140,6 +189,119 @@ pub struct Decoder<'a> {
 }
 
 // ============================================================================
+
+/// Creates a mask with `n` 1 bits at position `p`.
+macro_rules! mask1 {
+    ($n:expr, $p:expr) => {
+        (!(!0u32 << $n) << $p)
+    };
+}
+
+// ============================================================================
+
+impl TryFrom<u32> for Opcode {
+    type Error = Error;
+
+    fn try_from(value: u32) -> Result<Self> {
+        use Opcode::*;
+
+        Ok(match value {
+            0 => End,
+            1 => Return,
+            2 => Call,
+            3 => TailCall,
+            4 => PushNil,
+            5 => Pop,
+            6 => PushInt,
+            7 => PushString,
+            8 => PushNum,
+            9 => PushNegNum,
+            10 => PushValue,
+            11 => GetLocal,
+            12 => GetGlobal,
+            13 => GetTable,
+            14 => GetDotted,
+            15 => GetIndexed,
+            16 => PushSelf,
+            17 => CreateTable,
+            18 => SetLocal,
+            19 => SetGlobal,
+            20 => SetTable,
+            21 => SetList,
+            22 => SetMap,
+            23 => Add,
+            24 => AddI,
+            25 => Sub,
+            26 => Mult,
+            27 => Div,
+            28 => Pow,
+            29 => Concat,
+            30 => Minus,
+            31 => Not,
+            32 => JumpNe,
+            33 => JumpEq,
+            34 => JumpLt,
+            35 => JumpLe,
+            36 => JumpGt,
+            37 => JumpGe,
+            38 => JumpTrue,
+            39 => JumpFalse,
+            40 => JumpOnTrue,
+            41 => JumpOnFalse,
+            42 => Jump,
+            43 => PushNilJump,
+            44 => ForPrep,
+            45 => ForLoop,
+            46 => LForPrep,
+            47 => LForLoop,
+            48 => Closure,
+            _ => return Error::new_decoder("unknown opcode: 0x{value:02x}").into(),
+        })
+    }
+}
+
+impl Header {
+    /// Size of instruction argument `U` (unsigned int).
+    fn size_u(&self) -> u32 {
+        self.size_instr_arg as u32 - self.size_op as u32
+    }
+
+    /// Max value of instruction argument `U` (unsigned int).
+    fn max_arg_u(&self) -> u32 {
+        (1 << self.size_u()) - 1
+    }
+
+    /// Max value of instruction argument `S` (signed int).
+    fn max_arg_s(&self) -> i32 {
+        // 1 bit taken up by sign.
+        self.max_arg_u() as i32 >> 1
+    }
+
+    /// Position of instruction argument `A`.
+    fn pos_arg_a(&self) -> u32 {
+        self.size_op as u32 + self.size_b as u32
+    }
+
+    /// Position of instruction argument `B`.
+    fn pos_arg_b(&self) -> u32 {
+        self.size_op as u32
+    }
+
+    /// Size of instruction argument `A`,
+    fn size_a(&self) -> u32 {
+        self.size_instr_arg as u32 - (self.size_op as u32 + self.size_b as u32)
+    }
+
+    /// Max value of instruction argument `A`,
+    fn max_arg_a(&self) -> u32 {
+        (1 << self.size_a()) - 1
+    }
+
+    /// Max value of instruction argument `B`,
+    fn max_arg_b(&self) -> u32 {
+        (1 << self.size_b) - 1
+    }
+}
 
 impl Default for Header {
     fn default() -> Self {
@@ -214,7 +376,7 @@ impl<'a> Decoder<'a> {
         // Top level function
         let proto = self.read_function()?;
 
-        println!("{proto:?}");
+        println!("{proto:#?}");
 
         Ok(())
     }
@@ -297,8 +459,16 @@ impl<'a> Decoder<'a> {
         let constants = self.read_constants()?;
         let code = self.read_code()?;
 
+        let mut ops: Box<[Op]> = (0..code.len()).into_iter().map(|_| Op::End).collect();
+        for (index, instr) in code.iter().cloned().enumerate() {
+            ops[index] = self.decode_op(instr)?;
+        }
+
+        assert_eq!(code.len(), ops.len());
+
         Ok(Proto {
             code,
+            ops,
             source,
             line_defined,
             num_params,
@@ -388,75 +558,90 @@ impl<'a> Decoder<'a> {
         Ok(code.into_boxed_slice())
     }
 
-    fn decode_op(&self, op: u32) -> () {
-        let opcode = op & (self.header.size_op as u32 - 1);
-        match opcode {
-            End => {},
-            Return => {},
+    fn decode_op(&self, op: u32) -> Result<Op> {
+        use Opcode::*;
 
-            Call => {},
-            TailCall => {},
+        let Header { size_op, .. } = self.header;
+        let opcode = Opcode::try_from(op & mask1!(size_op, 0))?;
+        let arg_u = op >> size_op;
+        let arg_s = arg_u as i32 - self.header.max_arg_s();
+        let arg_a = op >> self.header.pos_arg_a();
+        let arg_b = (op >> self.header.pos_arg_b()) & self.header.max_arg_b();
 
-            PushNil => {},
-            Pop => {},
+        let op = match opcode {
+            End => Op::End,
+            Return => Op::Return { results: arg_u },
 
-            PushInt => {},
-            PushString => {},
-            PushNum => {},
-            PushNegNum => {},
+            Call => Op::Call {
+                stack_offset: arg_a,
+                results: arg_b,
+            },
+            TailCall => todo!(),
 
-            PushValue => {},
+            PushNil => todo!(),
+            Pop => todo!(),
 
-            GetLocal => {},
-            GetGlobal => {},
+            PushInt => Op::PushInt { value: arg_s },
+            PushString => todo!(),
+            PushNum => todo!(),
+            PushNegNum => todo!(),
 
-            GetTable => {},
-            GetDotted => {},
-            GetIndexed => {},
-            PushSelf => {},
+            PushValue => todo!(),
 
-            CreateTable => {},
+            GetLocal => Op::GetLocal {
+                stack_offset: arg_u,
+            },
+            GetGlobal => Op::GetGlobal { string_id: arg_u },
 
-            SetLocal => {},
-            SetGlobal => {},
-            SetTable => {},
+            GetTable => todo!(),
+            GetDotted => todo!(),
+            GetIndexed => todo!(),
+            PushSelf => todo!(),
 
-            SetList => {},
-            SetMap => {},
+            CreateTable => todo!(),
 
-            Add => {},
-            AddI => {},
-            Sub => {},
-            Mult => {},
-            Div => {},
-            Pow => {},
-            Concat => {},
-            Minus => {},
-            Not => {},
+            SetLocal => todo!(),
+            SetGlobal => todo!(),
+            SetTable => todo!(),
 
-            JumpNe => {},
-            JumpEq => {},
-            JumpLt => {},
-            JumpLe => {},
-            JumpGt => {},
-            JumpGe => {},
+            SetList => todo!(),
+            SetMap => todo!(),
 
-            JumpTrue => {},
-            JumpFalse => {},
-            JumpOnTrue => {},
-            JumpOnFalse => {},
-            Jump => {},
+            Add => Op::Add,
+            AddI => todo!(),
+            Sub => todo!(),
+            Mult => todo!(),
+            Div => todo!(),
+            Pow => todo!(),
+            Concat => todo!(),
+            Minus => todo!(),
+            Not => todo!(),
 
-            PushNilJump => {},
+            JumpNe => todo!(),
+            JumpEq => todo!(),
+            JumpLt => todo!(),
+            JumpLe => todo!(),
+            JumpGt => todo!(),
+            JumpGe => todo!(),
 
-            ForPrep => {},
-            ForLoop => {},
+            JumpTrue => todo!(),
+            JumpFalse => todo!(),
+            JumpOnTrue => todo!(),
+            JumpOnFalse => todo!(),
+            Jump => todo!(),
 
-            LForPrep => {},
-            LForLoop => {},
+            PushNilJump => todo!(),
 
-            Closure => {},
-        }
+            ForPrep => todo!(),
+            ForLoop => todo!(),
+
+            LForPrep => todo!(),
+            LForLoop => todo!(),
+
+            Closure => todo!(),
+        };
+
+        Ok(op)
     }
 }
 
