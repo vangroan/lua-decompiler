@@ -19,6 +19,13 @@ use std::io::{Cursor, Read};
 use crate::errors::{Error, Result};
 use crate::reader::{Endian, NumberType};
 
+mod ast;
+mod parser;
+mod scribe;
+
+pub use parser::Parser;
+pub use scribe::Scribe;
+
 const LUA_VERSION: u8 = 0x40;
 const ID_CHUNK: u8 = 27;
 const SIGNATURE: &str = "Lua";
@@ -151,7 +158,7 @@ struct Header {
 
 /// Function prototype.
 #[derive(Debug)]
-struct Proto {
+pub struct Proto {
     code: Box<[u32]>,
     ops: Box<[Op]>,
     source: String,
@@ -345,7 +352,7 @@ impl<'a> Decoder<'a> {
         }
     }
 
-    pub fn decode(&mut self) -> Result<()> {
+    pub fn decode(&mut self) -> Result<Proto> {
         self.read_bytemark()?;
         self.read_signature()?;
         self.header = Header {
@@ -378,7 +385,7 @@ impl<'a> Decoder<'a> {
 
         println!("{proto:#?}");
 
-        Ok(())
+        Ok(proto)
     }
 }
 
