@@ -36,6 +36,7 @@ pub enum Stmt {
     LocalVar(LocalVar),
     Assign(Box<Assign>),
     Call(Box<Call>),
+    Block(Block),
 }
 
 /// Local variable declaration.

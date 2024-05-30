@@ -19,8 +19,26 @@ impl Scribe {
         self.fmt_block(f, &syntax.root)
     }
 
+    fn with_indent<F>(&mut self, func: F) -> Result<()>
+    where
+        F: FnOnce(&mut Self) -> Result<()>,
+    {
+        self.level += 1;
+        func(self)?;
+        self.level -= 1;
+        Ok(())
+    }
+
+    fn fmt_indent(&mut self, f: &mut impl FmtWrite) -> Result<()> {
+        for _ in 0..self.level {
+            write!(f, "    ")?;
+        }
+        Ok(())
+    }
+
     fn fmt_block(&mut self, f: &mut impl FmtWrite, block: &Block) -> Result<()> {
         for node in &block.nodes {
+            self.fmt_indent(f)?;
             self.fmt_node(f, node)?;
         }
 
@@ -40,6 +58,7 @@ impl Scribe {
             Stmt::LocalVar(local_var) => self.fmt_local_var(f, local_var),
             Stmt::Call(call) => self.fmt_call(f, call),
             Stmt::Assign(assign) => self.fmt_assign(f, assign),
+            Stmt::Block(block) => self.fmt_block_stmt(f, block),
         }
     }
 
@@ -106,6 +125,13 @@ impl Scribe {
         write!(f, "{name} = ")?;
         self.fmt_expr(f, rhs)?;
         writeln!(f)?;
+        Ok(())
+    }
+
+    fn fmt_block_stmt(&mut self, f: &mut impl FmtWrite, block: &Block) -> Result<()> {
+        writeln!(f, "do")?;
+        self.with_indent(|scribe| scribe.fmt_block(f, block))?;
+        writeln!(f, "end")?;
         Ok(())
     }
 }

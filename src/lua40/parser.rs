@@ -30,6 +30,9 @@ pub struct Parser<'a> {
     /// bytecode buffer. Each node corresponds to an instruction.
     nodes: Box<[Option<Node>]>,
 
+    /// Stack of blocks.
+    blocks: Vec<BlockSpan>,
+
     /// Stack offset where local variables end.
     local_end: u32,
 
@@ -48,6 +51,14 @@ pub struct Parser<'a> {
 /// Acts as the identifier for an instruction within the current function.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Ip(u32);
+
+#[derive(Debug)]
+struct BlockSpan {
+    /// Instruction where the block started.
+    start: Ip,
+    /// Instruction right after the last instruction in the block.
+    end: Ip,
+}
 
 struct Local {
     name: String,
@@ -86,6 +97,7 @@ impl<'a> Parser<'a> {
             proto: root,
             stack: vec![],
             nodes: (0..root.code.len()).into_iter().map(|_| None).collect(),
+            blocks: vec![],
             local_end: 0,
             locals: vec![],
             local_namer: Namer::new(&ASCII_CHARS),
@@ -104,6 +116,15 @@ impl<'a> Parser<'a> {
 
         for (ip, op) in iter {
             println!("[{}] op: {op:?}", ip.as_usize() + 1);
+
+            // If we reached the end marker of the block, wrap up
+            // by collecting all the nodes in the block into a single node.
+            if let Some(block) = self.blocks.last() {
+                if ip == block.end {
+                    self.end_block()?;
+                }
+            }
+
             match op {
                 Op::End => break,
                 Op::Return { .. } => { /* todo */ }
@@ -274,7 +295,16 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    fn parse_jump_le(&mut self, _ip: Ip, _dest_ip: i32) -> Result<()> {
+    fn parse_jump_le(&mut self, ip: Ip, dest_ip: i32) -> Result<()> {
+        // Destination address is relative to the instruction following the current one.
+        let end = (ip.0 as i32 + 1)
+            .checked_add(dest_ip)
+            .ok_or_else(|| Error::new_decoder("jump address overflow"))?;
+        if end < 0 || end >= self.proto.code.len() as i32 {
+            return Error::new_decoder("jump destination out of bounds").into();
+        }
+        self.start_block(ip, Ip(end as u32));
+
         // NOTE: Jump relative to the next ip
         // TODO: Generate if conditional statement and block nodes.
         let rhs_ip = self.stack.pop().ok_or_else(err_stack_underflow)?;
@@ -296,6 +326,41 @@ impl<'a> Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
+    /// Start a new block.
+    fn start_block(&mut self, start: Ip, end: Ip) {
+        self.blocks.push(BlockSpan { start, end })
+    }
+
+    fn end_block(&mut self) -> Result<()> {
+        if let Some(BlockSpan { start, end }) = self.blocks.pop() {
+            println!("end block ({start}, {end})");
+
+            // TODO: if, while, for, do...
+            // TODO: Conditional header
+            // let _header = self.nodes[start.as_usize()].take().ok_or_else(err_node_none)?;
+            let _ = self.nodes[start.as_usize()].take();
+            let mut nodes = vec![];
+
+            // Note that the ending instruction is exclusive.
+            // The jump destination is the previous instruction.
+            for maybe_node in &mut self.nodes[start.as_usize()..end.as_usize()] {
+                if let Some(node) = maybe_node.take() {
+                    nodes.push(node);
+                }
+            }
+            let body = Block { nodes };
+
+            // Place the new node into the header instruction.
+            self.nodes[start.as_usize()] = Some(Node::Stmt(Stmt::Block(body)));
+
+            println!("stack: {:?}", self.stack);
+            println!("nodes: {:?}", self.nodes);
+            println!("-------------")
+        }
+
+        Ok(())
+    }
+
     /// Promotes the syntax node the given instruction into a local variable declaration.
     ///
     /// Returns `true` if the node was promoted.
