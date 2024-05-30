@@ -3,7 +3,7 @@
 //! Analyzes bytecode instructions to generate an abstract syntax tree.
 use std::fmt::{self, Formatter};
 
-use super::ast::{BinExpr, BinOp, Call, Expr, Ident, Lit, LocalVar, Node, Stmt};
+use super::ast::{Assign, BinExpr, BinOp, Call, Expr, Ident, Lit, LocalVar, Node, Stmt};
 use super::{Op, Proto};
 use crate::errors::{Error, Result};
 use crate::lua40::ast::{Block, Syntax};
@@ -33,6 +33,12 @@ pub struct Parser<'a> {
     /// Stack offset where local variables end.
     local_end: u32,
 
+    /// Discovered local variables.
+    ///
+    /// When the chunk's debug information is stripped,
+    /// we have to build up our own metadata for local variables.
+    locals: Vec<Local>,
+
     /// namer for local variables.
     local_namer: Namer,
 }
@@ -42,6 +48,14 @@ pub struct Parser<'a> {
 /// Acts as the identifier for an instruction within the current function.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Ip(u32);
+
+struct Local {
+    name: String,
+    stack_offset: u32,
+    /// Flag indicating whether the declaration statement
+    /// has been encountered.
+    is_declared: bool,
+}
 
 struct Namer {
     /// Set of characters that can be used to generate names.
@@ -73,6 +87,7 @@ impl<'a> Parser<'a> {
             stack: vec![],
             nodes: (0..root.code.len()).into_iter().map(|_| None).collect(),
             local_end: 0,
+            locals: vec![],
             local_namer: Namer::new(&ASCII_CHARS),
         }
     }
@@ -88,7 +103,7 @@ impl<'a> Parser<'a> {
             .map(|(i, o)| (Ip(i as u32), o));
 
         for (ip, op) in iter {
-            println!("[{ip}] op: {op:?}");
+            println!("[{}] op: {op:?}", ip.as_usize() + 1);
             match op {
                 Op::End => break,
                 Op::Return { .. } => { /* todo */ }
@@ -96,10 +111,13 @@ impl<'a> Parser<'a> {
                     stack_offset,
                     results,
                 } => self.parse_call(ip, *stack_offset, *results)?,
+                Op::Pop { n } => self.parse_pop(*n)?,
                 Op::PushInt { value } => self.parse_push_int(ip, *value)?,
                 Op::GetLocal { stack_offset } => self.parse_get_local(ip, *stack_offset)?,
                 Op::GetGlobal { string_id } => self.parse_get_global(ip, *string_id)?,
+                Op::SetLocal { stack_offset } => self.parse_set_local(ip, *stack_offset)?,
                 Op::Add => self.parse_binary_op(ip, BinOp::Add)?,
+                Op::JumpLe { ip: dest_ip } => self.parse_jump_le(ip, *dest_ip)?,
             }
 
             println!("stack: {:?}", self.stack);
@@ -164,6 +182,18 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
+    fn parse_pop(&mut self, n: u32) -> Result<()> {
+        // Removes 'n' slots from the stack.
+        for _ in 0..n {
+            self.stack.pop();
+        }
+
+        // Pop is implicit to remove locals at the end of a block,
+        // so doesn't have any syntax to generate.
+
+        Ok(())
+    }
+
     fn parse_push_int(&mut self, ip: Ip, value: i32) -> Result<()> {
         // Pushes a constant integer into the stack top.
         self.stack.push(ip);
@@ -176,7 +206,7 @@ impl<'a> Parser<'a> {
 
     /// Parse a [Op::GetLocal] instruction.
     fn parse_get_local(&mut self, ip: Ip, stack_offset: u32) -> Result<()> {
-        // Because the stack slot is being trated as a local variable, we
+        // Because the stack slot is now being treated as a local variable, we
         // can check how it was written and possibly promote that syntax from
         // an expression into a local variable declaration statement.
         let node_ip = self.stack[stack_offset as usize];
@@ -196,6 +226,28 @@ impl<'a> Parser<'a> {
 
         let global_name = self.get_global_var_name(string_id);
         self.nodes[ip.as_usize()] = Some(Ident::new(global_name).into());
+
+        Ok(())
+    }
+
+    fn parse_set_local(&mut self, ip: Ip, stack_offset: u32) -> Result<()> {
+        // An existing node that wrote the variable may be promoted to a variable declaration.
+        let node_ip = self.stack[stack_offset as usize];
+        self.promote_local_var(node_ip)?;
+
+        // Value is 'moved' into the variable.
+        let rhs_ip = self.stack.pop().ok_or_else(err_stack_underflow)?;
+        let rhs_node = self.nodes[rhs_ip.as_usize()]
+            .take()
+            .ok_or_else(err_node_none)?
+            .into_expr()
+            .ok_or_else(err_expr_expected)?;
+
+        let name = Ident::new(self.get_local_var_name(stack_offset)?);
+        self.nodes[ip.as_usize()] = Some(Node::Stmt(Stmt::Assign(Box::new(Assign {
+            name,
+            rhs: rhs_node,
+        }))));
 
         Ok(())
     }
@@ -221,11 +273,33 @@ impl<'a> Parser<'a> {
 
         Ok(())
     }
+
+    fn parse_jump_le(&mut self, _ip: Ip, _dest_ip: i32) -> Result<()> {
+        // NOTE: Jump relative to the next ip
+        // TODO: Generate if conditional statement and block nodes.
+        let rhs_ip = self.stack.pop().ok_or_else(err_stack_underflow)?;
+        let lhs_ip = self.stack.pop().ok_or_else(err_stack_underflow)?;
+
+        let _lhs = self.nodes[lhs_ip.as_usize()]
+            .take()
+            .ok_or_else(err_node_none)?
+            .into_expr()
+            .ok_or_else(err_expr_expected)?;
+        let _rhs = self.nodes[rhs_ip.as_usize()]
+            .take()
+            .ok_or_else(err_node_none)?
+            .into_expr()
+            .ok_or_else(err_expr_expected)?;
+
+        Ok(())
+    }
 }
 
 impl<'a> Parser<'a> {
     /// Promotes the syntax node the given instruction into a local variable declaration.
-    fn promote_local_var(&mut self, ip: Ip) -> Result<()> {
+    ///
+    /// Returns `true` if the node was promoted.
+    fn promote_local_var(&mut self, ip: Ip) -> Result<bool> {
         // If the stack slot is not a local variable declaration,
         // then promote it.
         //
@@ -245,17 +319,19 @@ impl<'a> Parser<'a> {
                         .into()
                     }
                     Node::Expr(rhs) => {
-                        // TODO: Generate name
+                        // Generate a new name for the local variable.
+                        // TODO: Detect conflict with globals or up-values.
                         let name = Ident::new(self.local_namer.next());
                         let new_node = Node::Stmt(Stmt::LocalVar(LocalVar { name, rhs }));
                         self.nodes[ip.as_usize()] = Some(new_node);
                         self.local_end += 1;
+                        return Ok(true);
                     }
                 }
             }
         }
 
-        Ok(())
+        Ok(false)
     }
 
     fn get_local_var_name(&self, local_id: u32) -> Result<&str> {
@@ -277,6 +353,16 @@ impl<'a> Parser<'a> {
 
     fn get_global_var_name(&self, string_id: u32) -> &str {
         self.proto.constants.strings[string_id as usize].as_str()
+    }
+
+    /// Checks whether we have a record of the local variable
+    /// at the given stack slot.
+    fn has_local(&self, stack_offset: u32) -> bool {
+        stack_offset as usize >= self.locals.len()
+    }
+
+    fn declare_local(&self, name: impl ToString, stack_offset: u32) -> Result<()> {
+        todo!("declare local")
     }
 }
 

@@ -1,7 +1,9 @@
 //! Code generator for Lua syntax.
 use std::fmt::Write as FmtWrite;
 
-use super::ast::{BinExpr, BinOp, Block, Call, Expr, Ident, Lit, LocalVar, Node, Stmt, Syntax};
+use super::ast::{
+    Assign, BinExpr, BinOp, Block, Call, Expr, Ident, Lit, LocalVar, Node, Stmt, Syntax,
+};
 use crate::errors::Result;
 
 pub struct Scribe {
@@ -37,6 +39,7 @@ impl Scribe {
         match stmt {
             Stmt::LocalVar(local_var) => self.fmt_local_var(f, local_var),
             Stmt::Call(call) => self.fmt_call(f, call),
+            Stmt::Assign(assign) => self.fmt_assign(f, assign),
         }
     }
 
@@ -95,6 +98,14 @@ impl Scribe {
             self.fmt_expr(f, arg)?;
         }
         write!(f, ")")?;
+        Ok(())
+    }
+
+    fn fmt_assign(&mut self, f: &mut impl FmtWrite, assign: &Assign) -> Result<()> {
+        let Assign { name, rhs } = assign;
+        write!(f, "{name} = ")?;
+        self.fmt_expr(f, rhs)?;
+        writeln!(f)?;
         Ok(())
     }
 }

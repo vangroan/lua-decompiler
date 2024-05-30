@@ -34,6 +34,7 @@ pub struct Ident {
 #[derive(Debug)]
 pub enum Stmt {
     LocalVar(LocalVar),
+    Assign(Box<Assign>),
     Call(Box<Call>),
 }
 
@@ -44,6 +45,12 @@ pub enum Stmt {
 /// ```
 #[derive(Debug)]
 pub struct LocalVar {
+    pub name: Ident,
+    pub rhs: Expr,
+}
+
+#[derive(Debug)]
+pub struct Assign {
     pub name: Ident,
     pub rhs: Expr,
 }

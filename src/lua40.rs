@@ -122,6 +122,10 @@ enum Op {
         results: u32,
     },
 
+    Pop {
+        n: u32,
+    },
+
     /// Push an integer constant onto the stack.
     ///
     /// Argument `S` is the inlined signed integer value.
@@ -140,7 +144,15 @@ enum Op {
         string_id: u32,
     },
 
+    SetLocal {
+        stack_offset: u32,
+    },
+
     Add,
+
+    JumpLe {
+        ip: i32,
+    },
 }
 
 #[derive(Debug)]
@@ -586,7 +598,7 @@ impl<'a> Decoder<'a> {
             TailCall => todo!(),
 
             PushNil => todo!(),
-            Pop => todo!(),
+            Pop => Op::Pop { n: arg_u },
 
             PushInt => Op::PushInt { value: arg_s },
             PushString => todo!(),
@@ -607,7 +619,9 @@ impl<'a> Decoder<'a> {
 
             CreateTable => todo!(),
 
-            SetLocal => todo!(),
+            SetLocal => Op::SetLocal {
+                stack_offset: arg_u,
+            },
             SetGlobal => todo!(),
             SetTable => todo!(),
 
@@ -627,7 +641,7 @@ impl<'a> Decoder<'a> {
             JumpNe => todo!(),
             JumpEq => todo!(),
             JumpLt => todo!(),
-            JumpLe => todo!(),
+            JumpLe => Op::JumpLe { ip: arg_s },
             JumpGt => todo!(),
             JumpGe => todo!(),
 
