@@ -26,11 +26,11 @@ pub struct Parser<'a> {
 
     /// Space for the syntax tree nodes that are being built.
     ///
-    /// This buffer has the same number of elements as the fucntion's
+    /// This buffer has the same number of elements as the function's
     /// bytecode buffer. Each node corresponds to an instruction.
     nodes: Box<[Option<Node>]>,
 
-    /// Stack of blocks.
+    /// Stack of block spans.
     blocks: Vec<BlockSpan>,
 
     /// Stack offset where local variables end.
