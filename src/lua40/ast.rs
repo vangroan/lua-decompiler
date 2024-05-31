@@ -20,6 +20,7 @@ pub struct Block {
 pub enum Node {
     Stmt(Stmt),
     Expr(Expr),
+    Partial(Partial),
 }
 
 #[derive(Debug)]
@@ -37,6 +38,7 @@ pub enum Stmt {
     Assign(Box<Assign>),
     Call(Box<Call>),
     Block(Block),
+    If(IfBlock),
 }
 
 /// Local variable declaration.
@@ -54,6 +56,49 @@ pub struct LocalVar {
 pub struct Assign {
     pub name: Ident,
     pub rhs: Expr,
+}
+
+/// `if` conditional block statement.
+#[derive(Debug)]
+pub struct IfBlock {
+    pub head: CondExpr,
+    pub then: Block,
+    pub else_: Option<Block>,
+}
+
+#[derive(Debug)]
+pub enum CondExpr {
+    Unary { op: (), rhs: Expr },
+    Binary { op: CondOp, lhs: Expr, rhs: Expr },
+}
+
+/// Conditional operators.
+#[derive(Debug)]
+pub enum CondOp {
+    Ne, // ~=
+    Eq, // ==
+    Lt, // <
+    Le, // <=
+    Gt, // >
+    Ge, // >=
+}
+
+// ----------------------------------------------------------------------------
+// Partials
+// ----------------------------------------------------------------------------
+
+/// A partially built statement.
+#[derive(Debug)]
+pub enum Partial {
+    IfHead(Box<IfHead>),
+    WhileHead,
+    ForHead,
+}
+
+/// Header for an `if` conditional statement.
+#[derive(Debug)]
+pub struct IfHead {
+    pub expr: CondExpr,
 }
 
 // ----------------------------------------------------------------------------
@@ -108,8 +153,15 @@ impl Node {
 
     pub fn into_expr(self) -> Option<Expr> {
         match self {
-            Node::Stmt(_) => None,
             Node::Expr(expr) => Some(expr),
+            _ => None,
+        }
+    }
+
+    pub fn into_partial(self) -> Option<Partial> {
+        match self {
+            Node::Partial(partial) => Some(partial),
+            _ => None,
         }
     }
 }
@@ -138,6 +190,12 @@ impl From<Ident> for Node {
     }
 }
 
+impl From<IfHead> for Node {
+    fn from(if_head: IfHead) -> Self {
+        Node::Partial(Partial::IfHead(Box::new(if_head)))
+    }
+}
+
 impl From<Lit> for Node {
     fn from(lit: Lit) -> Self {
         Node::Expr(Expr::Literal(lit))
@@ -153,5 +211,19 @@ impl From<BinExpr> for Node {
 impl From<Call> for Node {
     fn from(call: Call) -> Self {
         Node::Expr(Expr::Call(Box::new(call)))
+    }
+}
+
+impl Node {
+    /// Checks whether the statement is partially built.
+    #[inline(always)]
+    pub fn is_partial(&self) -> bool {
+        matches!(self, Node::Partial(_))
+    }
+
+    /// Checks whether the statement is completely built.
+    #[inline(always)]
+    pub fn is_complete(&self) -> bool {
+        !self.is_partial()
     }
 }

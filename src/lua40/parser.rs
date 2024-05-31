@@ -3,10 +3,12 @@
 //! Analyzes bytecode instructions to generate an abstract syntax tree.
 use std::fmt::{self, Formatter};
 
-use super::ast::{Assign, BinExpr, BinOp, Call, Expr, Ident, Lit, LocalVar, Node, Stmt};
+use super::ast::{
+    Assign, BinExpr, BinOp, Call, CondExpr, CondOp, Expr, Ident, IfHead, Lit, LocalVar, Node, Stmt,
+};
 use super::{Op, Proto};
 use crate::errors::{Error, Result};
-use crate::lua40::ast::{Block, Syntax};
+use crate::lua40::ast::{Block, IfBlock, Partial, Syntax};
 
 const ASCII_CHARS: [u8; 26] = [
     'a' as u8, 'b' as u8, 'c' as u8, 'd' as u8, 'e' as u8, 'f' as u8, 'g' as u8, 'h' as u8,
@@ -83,6 +85,10 @@ fn err_stack_underflow() -> Error {
 
 fn err_expr_expected() -> Error {
     Error::new_parser("expected expression")
+}
+
+fn err_partial_expected() -> Error {
+    Error::new_parser("expected partial statement")
 }
 
 fn err_node_none() -> Error {
@@ -310,16 +316,27 @@ impl<'a> Parser<'a> {
         let rhs_ip = self.stack.pop().ok_or_else(err_stack_underflow)?;
         let lhs_ip = self.stack.pop().ok_or_else(err_stack_underflow)?;
 
-        let _lhs = self.nodes[lhs_ip.as_usize()]
+        let lhs = self.nodes[lhs_ip.as_usize()]
             .take()
             .ok_or_else(err_node_none)?
             .into_expr()
             .ok_or_else(err_expr_expected)?;
-        let _rhs = self.nodes[rhs_ip.as_usize()]
+        let rhs = self.nodes[rhs_ip.as_usize()]
             .take()
             .ok_or_else(err_node_none)?
             .into_expr()
             .ok_or_else(err_expr_expected)?;
+
+        self.nodes[ip.as_usize()] = Some(
+            IfHead {
+                expr: CondExpr::Binary {
+                    op: CondOp::Le,
+                    lhs,
+                    rhs,
+                },
+            }
+            .into(),
+        );
 
         Ok(())
     }
@@ -338,20 +355,38 @@ impl<'a> Parser<'a> {
             // TODO: if, while, for, do...
             // TODO: Conditional header
             // let _header = self.nodes[start.as_usize()].take().ok_or_else(err_node_none)?;
-            let _ = self.nodes[start.as_usize()].take();
+
             let mut nodes = vec![];
 
             // Note that the ending instruction is exclusive.
             // The jump destination is the previous instruction.
-            for maybe_node in &mut self.nodes[start.as_usize()..end.as_usize()] {
+            for maybe_node in &mut self.nodes[start.as_usize() + 1..end.as_usize()] {
                 if let Some(node) = maybe_node.take() {
                     nodes.push(node);
                 }
             }
             let body = Block { nodes };
 
-            // Place the new node into the header instruction.
-            self.nodes[start.as_usize()] = Some(Node::Stmt(Stmt::Block(body)));
+            let head = self.nodes[start.as_usize()]
+                .take()
+                .ok_or_else(err_node_none)?
+                .into_partial()
+                .ok_or_else(err_partial_expected)?;
+            match head {
+                Partial::IfHead(if_head) => {
+                    let IfHead { expr } = *if_head;
+                    let node = Node::Stmt(Stmt::If(IfBlock {
+                        head: expr,
+                        then: body,
+                        else_: None,
+                    }));
+
+                    // Place the new node into the header instruction.
+                    self.nodes[start.as_usize()] = Some(node);
+                }
+                Partial::WhileHead => todo!(),
+                Partial::ForHead => todo!(),
+            }
 
             println!("stack: {:?}", self.stack);
             println!("nodes: {:?}", self.nodes);
@@ -377,12 +412,6 @@ impl<'a> Parser<'a> {
                 let node = self.nodes[ip.as_usize()].take().unwrap();
 
                 match node {
-                    Node::Stmt(_) => {
-                        return Error::new_parser(
-                            "a statement cannot be turned into a local variable declaration",
-                        )
-                        .into()
-                    }
                     Node::Expr(rhs) => {
                         // Generate a new name for the local variable.
                         // TODO: Detect conflict with globals or up-values.
@@ -391,6 +420,18 @@ impl<'a> Parser<'a> {
                         self.nodes[ip.as_usize()] = Some(new_node);
                         self.local_end += 1;
                         return Ok(true);
+                    }
+                    Node::Stmt(_) => {
+                        return Error::new_parser(
+                            "a statement cannot be turned into a local variable declaration",
+                        )
+                        .into()
+                    }
+                    Node::Partial(_) => {
+                        return Error::new_parser(
+                            "a partially built statement cannot be turned into a local variable declaration",
+                        )
+                        .into()
                     }
                 }
             }
@@ -412,6 +453,9 @@ impl<'a> Parser<'a> {
             },
             Node::Expr(_) => {
                 Error::new_parser("unexpected expression in local variable node").into()
+            }
+            Node::Partial(_) => {
+                Error::new_parser("unexpected partial statement in local variable node").into()
             }
         }
     }

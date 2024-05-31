@@ -2,7 +2,8 @@
 use std::fmt::Write as FmtWrite;
 
 use super::ast::{
-    Assign, BinExpr, BinOp, Block, Call, Expr, Ident, Lit, LocalVar, Node, Stmt, Syntax,
+    Assign, BinExpr, BinOp, Block, Call, CondExpr, CondOp, Expr, Ident, IfBlock, Lit, LocalVar,
+    Node, Stmt, Syntax,
 };
 use crate::errors::Result;
 
@@ -50,6 +51,7 @@ impl Scribe {
             Node::Stmt(stmt) => self.fmt_stmt(f, stmt),
             // FIXME: Some expressions are valid statements, like Call. Can we detect this and wrap them in stmt?
             Node::Expr(expr) => self.fmt_expr(f, expr),
+            Node::Partial(_) => panic!("partially built statement"),
         }
     }
 
@@ -59,6 +61,7 @@ impl Scribe {
             Stmt::Call(call) => self.fmt_call(f, call),
             Stmt::Assign(assign) => self.fmt_assign(f, assign),
             Stmt::Block(block) => self.fmt_block_stmt(f, block),
+            Stmt::If(if_block) => self.fmt_if_block(f, if_block),
         }
     }
 
@@ -132,6 +135,47 @@ impl Scribe {
         writeln!(f, "do")?;
         self.with_indent(|scribe| scribe.fmt_block(f, block))?;
         writeln!(f, "end")?;
+        Ok(())
+    }
+
+    fn fmt_if_block(&mut self, f: &mut impl FmtWrite, if_block: &IfBlock) -> Result<()> {
+        //  head
+        write!(f, "if ")?;
+        self.fmt_cond_expr(f, &if_block.head)?;
+        writeln!(f, " then")?;
+
+        // body
+        self.with_indent(|scribe| scribe.fmt_block(f, &if_block.then))?;
+        if let Some(else_) = &if_block.else_ {
+            writeln!(f, "else")?;
+            self.with_indent(|scribe| scribe.fmt_block(f, else_))?;
+        }
+
+        writeln!(f, "end")?;
+        Ok(())
+    }
+
+    fn fmt_cond_expr(&mut self, f: &mut impl FmtWrite, expr: &CondExpr) -> Result<()> {
+        match expr {
+            CondExpr::Unary { .. } => todo!("unary expression"),
+            CondExpr::Binary { op, lhs, rhs } => {
+                self.fmt_expr(f, lhs)?;
+                write!(f, " ")?;
+
+                match op {
+                    CondOp::Ne => write!(f, "~=")?,
+                    CondOp::Eq => write!(f, "==")?,
+                    CondOp::Lt => write!(f, "<")?,
+                    CondOp::Le => write!(f, "<=")?,
+                    CondOp::Gt => write!(f, ">")?,
+                    CondOp::Ge => write!(f, ">=")?,
+                }
+
+                write!(f, " ")?;
+                self.fmt_expr(f, rhs)?;
+            }
+        }
+
         Ok(())
     }
 }
