@@ -180,20 +180,10 @@ impl<'a> Parser<'a> {
             self.stack.push(ip);
         }
 
-        let name = self.nodes[name_ip.as_usize()]
-            .take()
-            .ok_or_else(err_node_none)?
-            .into_expr()
-            .ok_or_else(err_expr_expected)?;
+        let name = self.take_expr(name_ip)?;
         let mut args = vec![];
         for arg_ip in arg_ips {
-            args.push(
-                self.nodes[arg_ip.as_usize()]
-                    .take()
-                    .ok_or_else(err_node_none)?
-                    .into_expr()
-                    .ok_or_else(err_expr_expected)?,
-            );
+            args.push(self.take_expr(arg_ip)?);
         }
 
         let node: Node = if results == 0 {
@@ -264,11 +254,7 @@ impl<'a> Parser<'a> {
 
         // Value is 'moved' into the variable.
         let rhs_ip = self.stack.pop().ok_or_else(err_stack_underflow)?;
-        let rhs_node = self.nodes[rhs_ip.as_usize()]
-            .take()
-            .ok_or_else(err_node_none)?
-            .into_expr()
-            .ok_or_else(err_expr_expected)?;
+        let rhs_node = self.take_expr(rhs_ip)?;
 
         let name = Ident::new(self.get_local_var_name(stack_offset)?);
         self.nodes[ip.as_usize()] = Some(Node::Stmt(Stmt::Assign(Box::new(Assign {
@@ -283,16 +269,8 @@ impl<'a> Parser<'a> {
         let rhs_ip = self.stack.pop().ok_or_else(err_stack_underflow)?;
         let lhs_ip = self.stack.pop().ok_or_else(err_stack_underflow)?;
 
-        let rhs = self.nodes[rhs_ip.as_usize()]
-            .take()
-            .ok_or_else(err_node_none)?
-            .into_expr()
-            .ok_or_else(err_expr_expected)?;
-        let lhs = self.nodes[lhs_ip.as_usize()]
-            .take()
-            .ok_or_else(err_node_none)?
-            .into_expr()
-            .ok_or_else(err_expr_expected)?;
+        let rhs = self.take_expr(rhs_ip)?;
+        let lhs = self.take_expr(lhs_ip)?;
 
         self.nodes[ip.as_usize()] = Some(BinExpr { op, lhs, rhs }.into());
 
@@ -316,21 +294,13 @@ impl<'a> Parser<'a> {
         let rhs_ip = self.stack.pop().ok_or_else(err_stack_underflow)?;
         let lhs_ip = self.stack.pop().ok_or_else(err_stack_underflow)?;
 
-        let lhs = self.nodes[lhs_ip.as_usize()]
-            .take()
-            .ok_or_else(err_node_none)?
-            .into_expr()
-            .ok_or_else(err_expr_expected)?;
-        let rhs = self.nodes[rhs_ip.as_usize()]
-            .take()
-            .ok_or_else(err_node_none)?
-            .into_expr()
-            .ok_or_else(err_expr_expected)?;
+        let lhs = self.take_expr(lhs_ip)?;
+        let rhs = self.take_expr(rhs_ip)?;
 
         self.nodes[ip.as_usize()] = Some(
             IfHead {
                 expr: CondExpr::Binary {
-                    op: CondOp::Le,
+                    op: CondOp::Le.invert(),
                     lhs,
                     rhs,
                 },
@@ -367,12 +337,8 @@ impl<'a> Parser<'a> {
             }
             let body = Block { nodes };
 
-            let head = self.nodes[start.as_usize()]
-                .take()
-                .ok_or_else(err_node_none)?
-                .into_partial()
-                .ok_or_else(err_partial_expected)?;
-            match head {
+            // head
+            match self.take_partial(start)? {
                 Partial::IfHead(if_head) => {
                     let IfHead { expr } = *if_head;
                     let node = Node::Stmt(Stmt::If(IfBlock {
@@ -472,6 +438,22 @@ impl<'a> Parser<'a> {
 
     fn declare_local(&self, name: impl ToString, stack_offset: u32) -> Result<()> {
         todo!("declare local")
+    }
+
+    fn take_expr(&mut self, ip: Ip) -> Result<Expr> {
+        self.nodes[ip.as_usize()]
+            .take()
+            .ok_or_else(err_node_none)?
+            .into_expr()
+            .ok_or_else(err_expr_expected)
+    }
+
+    fn take_partial(&mut self, ip: Ip) -> Result<Partial> {
+        self.nodes[ip.as_usize()]
+            .take()
+            .ok_or_else(err_node_none)?
+            .into_partial()
+            .ok_or_else(err_partial_expected)
     }
 }
 

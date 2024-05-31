@@ -73,7 +73,7 @@ pub enum CondExpr {
 }
 
 /// Conditional operators.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum CondOp {
     Ne, // ~=
     Eq, // ==
@@ -225,5 +225,18 @@ impl Node {
     #[inline(always)]
     pub fn is_complete(&self) -> bool {
         !self.is_partial()
+    }
+}
+
+impl CondOp {
+    pub fn invert(self) -> Self {
+        match self {
+            CondOp::Ne => todo!(),
+            CondOp::Eq => todo!(),
+            CondOp::Lt => todo!(),
+            CondOp::Le => CondOp::Gt,
+            CondOp::Gt => todo!(),
+            CondOp::Ge => todo!(),
+        }
     }
 }
