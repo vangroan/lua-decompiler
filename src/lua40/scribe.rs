@@ -91,7 +91,7 @@ impl Scribe {
         match lit {
             Lit::Int(value) => write!(f, "{}", value)?,
             Lit::Num(_) => todo!(),
-            Lit::Str(_) => todo!(),
+            Lit::Str(value) => write!(f, "'{}'", value)?,
         }
         Ok(())
     }

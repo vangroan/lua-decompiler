@@ -31,6 +31,10 @@ const ID_CHUNK: u8 = 27;
 const SIGNATURE: &str = "Lua";
 const TEST_NUMBER: f64 = 3.14159265358979323846E8;
 
+const U16_BYTES: usize = 2;
+const U32_BYTES: usize = 4;
+const U64_BYTES: usize = 8;
+
 /// As per `lopcode.h`
 #[derive(Debug)]
 pub enum Opcode {
@@ -133,6 +137,13 @@ enum Op {
         value: i32,
     },
 
+    /// Push a string constant onto the stack.
+    ///
+    /// Argument `U` is the index of the string in the function's string constant table.
+    PushString {
+        string_id: u32,
+    },
+
     /// Copy the local variable from stack index `U` to the top of the stack.
     GetLocal {
         stack_offset: u32,
@@ -155,6 +166,10 @@ enum Op {
     },
 }
 
+/// Chunk header.
+///
+/// Describes the Lua instance and architecture that created the chunk,
+/// which is important for interpreting the chunk contents.
 #[derive(Debug)]
 struct Header {
     version: u8,
@@ -171,7 +186,7 @@ struct Header {
 /// Function prototype.
 #[derive(Debug)]
 pub struct Proto {
-    code: Box<[u32]>,
+    code: Box<[u8]>,
     ops: Box<[Op]>,
     source: String,
     line_defined: u32,
@@ -212,16 +227,16 @@ pub struct Decoder<'a> {
 /// Creates a mask with `n` 1 bits at position `p`.
 macro_rules! mask1 {
     ($n:expr, $p:expr) => {
-        (!(!0u32 << $n) << $p)
+        (!(!0 << $n) << $p)
     };
 }
 
 // ============================================================================
 
-impl TryFrom<u32> for Opcode {
+impl TryFrom<u64> for Opcode {
     type Error = Error;
 
-    fn try_from(value: u32) -> Result<Self> {
+    fn try_from(value: u64) -> Result<Self> {
         use Opcode::*;
 
         Ok(match value {
@@ -317,7 +332,7 @@ impl Header {
     }
 
     /// Max value of instruction argument `B`,
-    fn max_arg_b(&self) -> u32 {
+    fn max_arg_b(&self) -> u64 {
         (1 << self.size_b) - 1
     }
 }
@@ -367,24 +382,7 @@ impl<'a> Decoder<'a> {
     pub fn decode(&mut self) -> Result<Proto> {
         self.read_bytemark()?;
         self.read_signature()?;
-        self.header = Header {
-            version: self.read_version()?,
-            endianess: self.read_endianess()?,
-            size_int: self.read_u8()?,
-            size_t: self.read_u8()?,
-            size_instr: self.read_u8()?,
-            size_instr_arg: self.read_u8()?,
-            size_op: self.read_u8()?,
-            size_b: self.read_u8()?,
-            number_type: {
-                let size_number = self.read_u8()?;
-                match size_number {
-                    4 => NumberType::F32,
-                    8 => NumberType::F64,
-                    _ => return Error::new_decoder("unknown number size: {size_number}").into(),
-                }
-            },
-        };
+        self.header = self.read_header()?;
 
         // println!("endianess: {endianess:?}; int: {size_int}B; size_t: {size_t}B; instruction: {size_instr1}B; args: {size_instr_args}b; op: {size_op}b; B: {size_b}b; Number: {size_number}B");
         println!("{}", self.header);
@@ -419,6 +417,27 @@ impl<'a> Decoder<'a> {
         } else {
             Error::new_decoder("bad signature").into()
         }
+    }
+
+    fn read_header(&mut self) -> Result<Header> {
+        Ok(Header {
+            version: self.read_version()?,
+            endianess: self.read_endianess()?,
+            size_int: self.read_u8()?,
+            size_t: self.read_u8()?,
+            size_instr: self.read_u8()?,
+            size_instr_arg: self.read_u8()?,
+            size_op: self.read_u8()?,
+            size_b: self.read_u8()?,
+            number_type: {
+                let size_number = self.read_u8()?;
+                match size_number {
+                    4 => NumberType::F32,
+                    8 => NumberType::F64,
+                    _ => return Error::new_decoder("unknown number size: {size_number}").into(),
+                }
+            },
+        })
     }
 
     /// Returns version.
@@ -478,12 +497,10 @@ impl<'a> Decoder<'a> {
         let constants = self.read_constants()?;
         let code = self.read_code()?;
 
-        let mut ops: Box<[Op]> = (0..code.len()).into_iter().map(|_| Op::End).collect();
-        for (index, instr) in code.iter().cloned().enumerate() {
-            ops[index] = self.decode_op(instr)?;
-        }
+        let ops = self.decode_ops(&code)?;
 
-        assert_eq!(code.len(), ops.len());
+        println!("code size: {}; op size: {}", code.len(), ops.len());
+        assert_eq!(code.len() / self.header.size_instr as usize, ops.len());
 
         Ok(Proto {
             code,
@@ -567,17 +584,58 @@ impl<'a> Decoder<'a> {
         })
     }
 
-    fn read_code(&mut self) -> Result<Box<[u32]>> {
+    fn read_code(&mut self) -> Result<Box<[u8]>> {
         let mut code = vec![];
 
-        for _ in 0..self.read_u32()? {
-            code.push(self.read_u32()?);
+        // Instruction bytecode is variable width depending on the architecture
+        // of the host machine that generated it.
+        let size = self.header.size_instr as usize * self.read_u32()? as usize;
+        println!("code size: {size}");
+        for _ in 0..size {
+            code.push(self.read_u8()?);
         }
 
         Ok(code.into_boxed_slice())
     }
 
-    fn decode_op(&self, op: u32) -> Result<Op> {
+    /// Reads aslice of binary containing Lua bytecode,
+    /// and decodes it to an IR representation.
+    fn decode_ops(&self, code: &[u8]) -> Result<Box<[Op]>> {
+        let mut ops = vec![];
+        let size_instr = self.header.size_instr as usize;
+        println!("code: {code:?}");
+        for idx in (0..code.len()).step_by(size_instr) {
+            let bytes = &code[idx..idx + size_instr];
+            println!("decode_ops, idx: {idx}; bytes: {:?}", bytes);
+            let instr = match size_instr {
+                U16_BYTES => {
+                    let a: [u8; 2] = bytes.try_into().unwrap();
+                    u16::from_le_bytes(a) as u64
+                }
+                U32_BYTES => {
+                    let a: [u8; 4] = bytes.try_into().unwrap();
+                    u32::from_le_bytes(a) as u64
+                }
+                U64_BYTES => {
+                    let a: [u8; 8] = bytes.try_into().unwrap();
+                    u64::from_le_bytes(a)
+                }
+                _ => {
+                    return Error::new_decoder(format!(
+                        "unsupported instruction size: {size_instr} bytes"
+                    ))
+                    .into()
+                }
+            };
+            ops.push(self.decode_op(instr)?);
+        }
+
+        // TODO: Validate that the last instruction is End, otherwise raise a "Bad code" error.
+
+        Ok(ops.into_boxed_slice())
+    }
+
+    fn decode_op(&self, op: u64) -> Result<Op> {
         use Opcode::*;
 
         let Header { size_op, .. } = self.header;
@@ -589,28 +647,34 @@ impl<'a> Decoder<'a> {
 
         let op = match opcode {
             End => Op::End,
-            Return => Op::Return { results: arg_u },
+            Return => Op::Return {
+                results: arg_u as u32,
+            },
 
             Call => Op::Call {
-                stack_offset: arg_a,
-                results: arg_b,
+                stack_offset: arg_a as u32,
+                results: arg_b as u32,
             },
             TailCall => todo!(),
 
             PushNil => todo!(),
-            Pop => Op::Pop { n: arg_u },
+            Pop => Op::Pop { n: arg_u as u32 },
 
             PushInt => Op::PushInt { value: arg_s },
-            PushString => todo!(),
+            PushString => Op::PushString {
+                string_id: arg_u as u32,
+            },
             PushNum => todo!(),
             PushNegNum => todo!(),
 
             PushValue => todo!(),
 
             GetLocal => Op::GetLocal {
-                stack_offset: arg_u,
+                stack_offset: arg_u as u32,
             },
-            GetGlobal => Op::GetGlobal { string_id: arg_u },
+            GetGlobal => Op::GetGlobal {
+                string_id: arg_u as u32,
+            },
 
             GetTable => todo!(),
             GetDotted => todo!(),
@@ -620,7 +684,7 @@ impl<'a> Decoder<'a> {
             CreateTable => todo!(),
 
             SetLocal => Op::SetLocal {
-                stack_offset: arg_u,
+                stack_offset: arg_u as u32,
             },
             SetGlobal => todo!(),
             SetTable => todo!(),

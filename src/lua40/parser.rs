@@ -140,6 +140,7 @@ impl<'a> Parser<'a> {
                 } => self.parse_call(ip, *stack_offset, *results)?,
                 Op::Pop { n } => self.parse_pop(*n)?,
                 Op::PushInt { value } => self.parse_push_int(ip, *value)?,
+                Op::PushString { .. } => {}
                 Op::GetLocal { stack_offset } => self.parse_get_local(ip, *stack_offset)?,
                 Op::GetGlobal { string_id } => self.parse_get_global(ip, *string_id)?,
                 Op::SetLocal { stack_offset } => self.parse_set_local(ip, *stack_offset)?,
@@ -217,6 +218,17 @@ impl<'a> Parser<'a> {
 
         // Integer literal in code.
         self.nodes[ip.as_usize()] = Some(Lit::Int(value).into());
+
+        Ok(())
+    }
+
+    fn parse_push_string(&mut self, ip: Ip, string_id: u32) -> Result<()> {
+        // Pushes a constant string onto the stack.
+        self.stack.push(ip);
+
+        // String literal in code.
+        self.nodes[ip.as_usize()] =
+            Some(Lit::Str(self.proto.constants.strings[string_id as usize].clone()).into());
 
         Ok(())
     }
